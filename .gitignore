@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+._*
+
+# Editor temporaries
+*.swp
+*.swo
+*~
+.*.kate-swp
+.vscode/
+.idea/
+
+# Build artifacts (if someone adds implementation)
+target/
+dist/
+build/
+*.exe
+*.o
+*.so
+*.dylib
+__pycache__/
+*.pyc
+node_modules/
+
+# Test outputs
+test-results/
+coverage/

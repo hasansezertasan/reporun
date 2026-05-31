@@ -1,0 +1,422 @@
+# reporun Test Scenarios
+# Language-agnostic test cases for validating implementations
+
+version: 1.0.0
+
+# Test scenarios are organized by phase and category
+# Each test includes:
+#   - name: Human-readable test name
+#   - setup: Prerequisites and test environment setup
+#   - command: Command to execute
+#   - expect: Expected behavior and exit code
+#   - cleanup: Optional cleanup steps
+
+build_phase:
+  valid_repository:
+    - name: "Build from valid GitHub repository with reporun.toml"
+      setup:
+        - Create test repository with reporun.toml
+        - Repository URL: https://github.com/test/valid-repo
+      command: "reporun https://github.com/test/valid-repo"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "Repository cloned"
+          - "Configuration validated"
+          - "Runner created"
+        creates_file: "./valid-repo"
+        file_executable: true
+      cleanup:
+        - Remove ./valid-repo
+        - Remove temporary clone
+
+
+  invalid_repository:
+    - name: "Build from non-existent repository"
+      command: "reporun https://github.com/test/does-not-exist"
+      expect:
+        exit_code: 2
+        output_contains:
+          - "Failed to clone repository"
+        creates_file: false
+
+    - name: "Build from repository without reporun.toml"
+      setup:
+        - Create test repository WITHOUT reporun.toml
+      command: "reporun https://github.com/test/no-config"
+      expect:
+        exit_code: 3
+        output_contains:
+          - "No reporun.toml found"
+        creates_file: false
+
+  invalid_configuration:
+    - name: "Build with invalid TOML syntax"
+      setup:
+        - Create repository with malformed reporun.toml
+        - Content: "[reporun\nentrypoint = 'missing quote"
+      command: "reporun https://github.com/test/invalid-toml"
+      expect:
+        exit_code: 4
+        output_contains:
+          - "Invalid reporun.toml"
+          - "parse error"
+        creates_file: false
+
+    - name: "Build with missing required field"
+      setup:
+        - Create repository with incomplete reporun.toml
+        - Content: "[reporun]\npython_version = '3.12'"  # Missing entrypoint
+      command: "reporun https://github.com/test/missing-field"
+      expect:
+        exit_code: 5
+        output_contains:
+          - "Missing required field"
+          - "entrypoint"
+        creates_file: false
+
+  invalid_input:
+    - name: "Build with invalid URL format"
+      command: "reporun not-a-url"
+      expect:
+        exit_code: 1
+        output_contains:
+          - "Invalid repository URL"
+
+    - name: "Build with no arguments"
+      command: "reporun"
+      expect:
+        exit_code: 1
+        output_contains:
+          - "Usage:"
+          - "reporun <repository-url>"
+
+runtime_phase:
+  first_run:
+    - name: "First run installs uv and clones repository"
+      setup:
+        - Build runner from valid repository
+        - Remove uv from PATH
+        - Clear cache directory
+        - Repository reporun.toml:
+            [reporun]
+            entrypoint = "python -c 'print(\"Hello\")'"
+      command: "./valid-repo"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "Installing uv"
+          - "Cloning repository"
+          - "Installing dependencies"
+          - "Hello"
+        creates_directory: "~/.cache/reporun/valid-repo"
+        uv_installed: true
+      cleanup:
+        - Remove cache directory
+
+    - name: "First run with Python version from .python-version"
+      setup:
+        - Build runner from repository
+        - Repository has .python-version file with "3.12"
+        - Repository has reporun.toml:
+            entrypoint = "python --version"
+      command: "./valid-repo"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "Python 3.12"
+        python_version_installed: "3.12"
+
+  subsequent_runs:
+    - name: "Second run always updates repository"
+      setup:
+        - Run once (so repository is cloned)
+        - Update repository on GitHub
+      command: "./valid-repo"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "Updating repository"
+        repository_updated: true
+
+  dependencies:
+    - name: "Install dependencies with uv sync"
+      setup:
+        - Repository has pyproject.toml with dependencies = ["requests"]
+        - Config:
+            entrypoint = "python -c 'import requests; print(\"OK\")'"
+      command: "./valid-repo"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "Installing dependencies"
+          - "OK"
+        dependency_installed: "requests"
+
+    - name: "Dependency installation failure"
+      setup:
+        - Repository pyproject.toml requires non-existent package
+      command: "./valid-repo"
+      expect:
+        exit_code: 13
+        output_contains:
+          - "Failed to install dependencies"
+
+  entrypoint:
+    - name: "Execute simple entrypoint"
+      setup:
+        - Config:
+            entrypoint = "python -c 'print(\"Test\")'"
+      command: "./valid-repo"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "Test"
+
+    - name: "Execute entrypoint with arguments"
+      setup:
+        - Config:
+            entrypoint = "python -m myapp"
+        - myapp/__main__.py prints sys.argv
+      command: "./valid-repo arg1 arg2"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "arg1"
+          - "arg2"
+
+    - name: "Entrypoint failure propagates exit code"
+      setup:
+        - Config:
+            entrypoint = "python -c 'import sys; sys.exit(42)'"
+      command: "./valid-repo"
+      expect:
+        exit_code: 42
+
+    - name: "Entrypoint not found"
+      setup:
+        - Config:
+            entrypoint = "python -m nonexistent"
+      command: "./valid-repo"
+      expect:
+        exit_code: 15
+        output_contains:
+          - "Entrypoint command not found"
+
+  storage_locations:
+    - name: "Storage in cache directory (always)"
+      setup:
+        - Any valid repository
+      command: "./valid-repo"
+      expect:
+        exit_code: 0
+        repository_cloned_to: "~/.cache/reporun/valid-repo"
+
+
+  signal_handling:
+    - name: "SIGINT forwarded to subprocess"
+      setup:
+        - Config:
+            entrypoint = "python -c 'import time; time.sleep(100)'"
+      command: "./valid-repo &"
+      actions:
+        - Send SIGINT after 1 second
+      expect:
+        exit_code: 130  # Standard exit code for SIGINT
+        process_terminated: true
+
+  offline_behavior:
+    - name: "Offline with existing clone gracefully degrades"
+      setup:
+        - Run once online (repository cloned)
+        - Disconnect network
+      command: "./valid-repo"
+      expect:
+        exit_code: 0
+        output_contains:
+          - "Warning: Failed to update"
+          - "Executing"
+        continues_with_cached: true
+
+    - name: "Offline without existing clone"
+      setup:
+        - Clear cache directory
+        - Disconnect network
+      command: "./valid-repo"
+      expect:
+        exit_code: 11
+        output_contains:
+          - "Failed to clone repository"
+
+cross_platform:
+  windows:
+    - name: "Windows executable format"
+      setup:
+        - Build on Windows
+      command: "reporun https://github.com/test/valid-repo"
+      expect:
+        creates_file: "./valid-repo.exe"
+        file_type: "PE32+ executable"
+
+    - name: "Windows cache directory"
+      setup:
+        - Any valid repository
+      command: "./valid-repo.exe"
+      expect:
+        repository_cloned_to: "%LOCALAPPDATA%/reporun/valid-repo"
+
+  macos:
+    - name: "macOS executable format"
+      setup:
+        - Build on macOS
+      command: "reporun https://github.com/test/valid-repo"
+      expect:
+        creates_file: "./valid-repo"
+        file_type: "Mach-O 64-bit executable"
+
+    - name: "macOS cache directory"
+      setup:
+        - Any valid repository
+      command: "./valid-repo"
+      expect:
+        repository_cloned_to: "~/Library/Caches/reporun/valid-repo"
+
+  linux:
+    - name: "Linux executable format"
+      setup:
+        - Build on Linux
+      command: "reporun https://github.com/test/valid-repo"
+      expect:
+        creates_file: "./valid-repo"
+        file_type: "ELF 64-bit LSB executable"
+
+    - name: "Linux cache directory with XDG_CACHE_HOME"
+      setup:
+        - Set XDG_CACHE_HOME=/custom/cache
+        - Any valid repository
+      command: "./valid-repo"
+      expect:
+        repository_cloned_to: "/custom/cache/reporun/valid-repo"
+
+    - name: "Linux cache directory without XDG_CACHE_HOME"
+      setup:
+        - Unset XDG_CACHE_HOME
+        - Any valid repository
+      command: "./valid-repo"
+      expect:
+        repository_cloned_to: "~/.cache/reporun/valid-repo"
+
+edge_cases:
+  - name: "Repository name with special characters"
+    setup:
+      - Repository URL: https://github.com/test/my-repo_v2.0
+    command: "reporun https://github.com/test/my-repo_v2.0"
+    expect:
+      exit_code: 0
+      creates_file: "./my-repo_v2.0"
+
+  - name: "Very long repository name"
+    setup:
+      - Repository name: 200 characters long
+    command: "reporun https://github.com/test/<very-long-name>"
+    expect:
+      exit_code: 0
+      creates_file: true
+      file_name_length: <= 255
+
+  - name: "Concurrent runs of same runner"
+    setup:
+      - Config with long-running entrypoint
+    command: "./valid-repo &; ./valid-repo &"
+    expect:
+      both_processes_succeed: true
+      no_race_conditions: true
+
+  - name: "Runner with no network after uv installed"
+    setup:
+      - Run once (uv installed, repo cloned)
+      - Disconnect network
+    command: "./valid-repo"
+    expect:
+      exit_code: 0
+      uses_cached_repo: true
+
+  - name: "Empty entrypoint command"
+    setup:
+      - Config:
+          entrypoint = ""
+    command: "./valid-repo"
+    expect:
+      exit_code: 15
+      output_contains:
+        - "Entrypoint command not found"
+
+  - name: "Repository changes significantly between runs"
+    setup:
+      - Run once
+      - Force push repository with completely different structure
+    command: "./valid-repo"
+    expect:
+      exit_code: 0
+      repository_reset_to_latest: true
+
+performance:
+  - name: "First run completes in reasonable time"
+    setup:
+      - Small repository (~100KB)
+      - Minimal dependencies
+    command: "./valid-repo"
+    expect:
+      exit_code: 0
+      completes_within: "30 seconds"
+
+  - name: "Subsequent run with no changes is fast"
+    setup:
+      - Run once
+      - No repository changes
+    command: "./valid-repo"
+    expect:
+      exit_code: 0
+      completes_within: "5 seconds"
+
+  - name: "Binary size is reasonable"
+    command: "reporun https://github.com/test/valid-repo"
+    expect:
+      creates_file: "./valid-repo"
+      file_size: "< 10MB"
+
+# Test execution guidelines:
+#
+# 1. Setup Phase:
+#    - Create test repositories as needed
+#    - Mock network conditions if required
+#    - Set environment variables
+#    - Clear/prepare cache directories
+#
+# 2. Execution Phase:
+#    - Run the specified command
+#    - Capture stdout, stderr, and exit code
+#    - Measure execution time for performance tests
+#
+# 3. Validation Phase:
+#    - Check exit code matches expected
+#    - Verify output contains expected strings
+#    - Validate file/directory creation
+#    - Confirm behavioral expectations
+#
+# 4. Cleanup Phase:
+#    - Remove created files/directories
+#    - Restore environment state
+#    - Clean up test repositories
+#
+# Test result format:
+# {
+#   "test_name": "...",
+#   "status": "pass" | "fail",
+#   "expected_exit_code": 0,
+#   "actual_exit_code": 0,
+#   "expected_output": [...],
+#   "actual_output": "...",
+#   "duration_ms": 1234,
+#   "error_message": "..." (if failed)
+# }
