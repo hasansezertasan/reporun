@@ -101,17 +101,22 @@ reporun <repository-url>
 
 When the runner binary is executed:
 
-1. **Determine Storage Location**
-   - Use OS-specific cache directory following XDG Base Directory Specification:
-     - **Linux**: `$XDG_CACHE_HOME/reporun/<repo-name>` or `~/.cache/reporun/<repo-name>`
-     - **macOS**: `~/Library/Caches/reporun/<repo-name>`
-     - **Windows**: `%LOCALAPPDATA%\reporun\<repo-name>`
+1. **Determine Storage Locations**
+   - Resolve the OS-specific cache root following XDG Base Directory Specification:
+     - **Linux**: `$XDG_CACHE_HOME/reporun` or `~/.cache/reporun`
+     - **macOS**: `~/Library/Caches/reporun`
+     - **Windows**: `%LOCALAPPDATA%\reporun`
+   - Derive two disjoint subdirectories under the cache root:
+     - **Tools directory**: `<cache-root>/_tools` (reporun-managed uv, etc.)
+     - **Repository directory**: `<cache-root>/repos/<owner>/<repo>` (per-repo clone)
+   - The tools directory and the repository directory must never overlap, so that installing uv cannot leave files in the path that `git clone` will later target.
+   - The repository path **must** include the owner segment, so that `alice/tool` and `bob/tool` resolve to different clone directories and never share an `origin`.
 
 2. **Ensure uv is Available**
    - Check if `uv` exists in PATH
    - If missing:
      - Download from https://astral.sh/uv/install.sh (Unix) or https://astral.sh/uv/install.ps1 (Windows)
-     - Install to a reporun-managed location within storage directory
+     - Install into `<cache-root>/_tools/uv` (the tools directory above), which is a sibling of `<cache-root>/repos/...` and therefore cannot collide with any per-repository clone target
      - Use this uv installation for all subsequent operations
 
 ### Repository Management
@@ -121,19 +126,19 @@ When the runner binary is executed:
    **First Run (no clone exists):**
 
    ```bash
-   git clone --depth 1 <repo-url> <storage-location>
+   git clone --depth 1 <repo-url> <cache-root>/repos/<owner>/<repo>
    ```
 
    **Subsequent Runs:**
    - Always update to latest version:
      ```bash
-     cd <storage-location>
+     cd <cache-root>/repos/<owner>/<repo>
      git fetch origin
      git reset --hard origin/HEAD
      ```
 
 4. **Read Configuration**
-   - Parse `<storage-location>/reporun.toml`
+   - Parse `<cache-root>/repos/<owner>/<repo>/reporun.toml`
    - Validate required fields
    - Use configuration for subsequent steps
 
@@ -162,12 +167,14 @@ When the runner binary is executed:
 
 6. **Run Entrypoint**
 
-   Execute the configured entrypoint command:
+   Execute the configured entrypoint command **inside the uv-managed project environment** so that the interpreter selected by `.python-version` / `requires-python` and the dependencies installed by `uv sync` are actually used:
 
    ```bash
-   cd <storage-location>
-   <entrypoint command>
+   cd <cache-root>/repos/<owner>/<repo>
+   uv run -- <entrypoint command>
    ```
+
+   The `uv run` wrapper is mandatory; invoking the entrypoint command directly from the shell would resolve `python` (and any other executable) from the ambient `PATH` rather than from the project's `.venv`, silently bypassing `uv sync`'s install and the project's Python version pin. Entrypoint authors therefore write commands like `python -m myproject` (or `myproject-cli`); they must **not** be required to prefix them with `uv run` themselves — reporun does that.
 
    **Process Management:**
    - Inherit parent process environment
@@ -228,8 +235,10 @@ entrypoint = "python -m myproject"
 
 ### Shell Command Execution
 
-- **Unix-like**: Use `/bin/sh -c` for entrypoint execution
-- **Windows**: Use `cmd.exe /C` or PowerShell depending on platform
+The entrypoint string is wrapped with `uv run --` and then handed to a platform-appropriate shell so that quoting, pipes, and redirections behave as written in `reporun.toml`:
+
+- **Unix-like**: `uv run -- /bin/sh -c "<entrypoint>"`
+- **Windows**: `uv run -- cmd.exe /C "<entrypoint>"` (or PowerShell where appropriate)
 
 ## Security Considerations
 

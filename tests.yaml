@@ -98,8 +98,8 @@ runtime_phase:
         - Build runner from valid repository
         - Remove uv from PATH
         - Clear cache directory
-        - Repository reporun.toml:
-            [reporun]
+        - |
+          Repository reporun.toml contents:
             entrypoint = "python -c 'print(\"Hello\")'"
       command: "./valid-repo"
       expect:
@@ -109,7 +109,7 @@ runtime_phase:
           - "Cloning repository"
           - "Installing dependencies"
           - "Hello"
-        creates_directory: "~/.cache/reporun/valid-repo"
+        creates_directory: "~/.cache/reporun/repos/test/valid-repo"
         uv_installed: true
       cleanup:
         - Remove cache directory
@@ -118,7 +118,8 @@ runtime_phase:
       setup:
         - Build runner from repository
         - Repository has .python-version file with "3.12"
-        - Repository has reporun.toml:
+        - |
+          Repository reporun.toml contents:
             entrypoint = "python --version"
       command: "./valid-repo"
       expect:
@@ -143,7 +144,8 @@ runtime_phase:
     - name: "Install dependencies with uv sync"
       setup:
         - Repository has pyproject.toml with dependencies = ["requests"]
-        - Config:
+        - |
+          reporun.toml contents:
             entrypoint = "python -c 'import requests; print(\"OK\")'"
       command: "./valid-repo"
       expect:
@@ -165,7 +167,8 @@ runtime_phase:
   entrypoint:
     - name: "Execute simple entrypoint"
       setup:
-        - Config:
+        - |
+          reporun.toml contents:
             entrypoint = "python -c 'print(\"Test\")'"
       command: "./valid-repo"
       expect:
@@ -175,7 +178,8 @@ runtime_phase:
 
     - name: "Execute entrypoint with arguments"
       setup:
-        - Config:
+        - |
+          reporun.toml contents:
             entrypoint = "python -m myapp"
         - myapp/__main__.py prints sys.argv
       command: "./valid-repo arg1 arg2"
@@ -187,7 +191,8 @@ runtime_phase:
 
     - name: "Entrypoint failure propagates exit code"
       setup:
-        - Config:
+        - |
+          reporun.toml contents:
             entrypoint = "python -c 'import sys; sys.exit(42)'"
       command: "./valid-repo"
       expect:
@@ -195,8 +200,13 @@ runtime_phase:
 
     - name: "Entrypoint not found"
       setup:
-        - Config:
-            entrypoint = "python -m nonexistent"
+        # Use an executable name guaranteed not to resolve on PATH, so the
+        # shell itself fails to launch the entrypoint. (A missing Python
+        # module like `python -m nonexistent` would not exercise this code
+        # path — Python is found, then exits with its own error code.)
+        - |
+          reporun.toml contents:
+            entrypoint = "reporun-nonexistent-binary-xyz123"
       command: "./valid-repo"
       expect:
         exit_code: 15
@@ -206,17 +216,18 @@ runtime_phase:
   storage_locations:
     - name: "Storage in cache directory (always)"
       setup:
-        - Any valid repository
+        - "Any valid repository (owner: test, name: valid-repo)"
       command: "./valid-repo"
       expect:
         exit_code: 0
-        repository_cloned_to: "~/.cache/reporun/valid-repo"
+        repository_cloned_to: "~/.cache/reporun/repos/test/valid-repo"
 
 
   signal_handling:
     - name: "SIGINT forwarded to subprocess"
       setup:
-        - Config:
+        - |
+          reporun.toml contents:
             entrypoint = "python -c 'import time; time.sleep(100)'"
       command: "./valid-repo &"
       actions:
@@ -260,10 +271,10 @@ cross_platform:
 
     - name: "Windows cache directory"
       setup:
-        - Any valid repository
+        - "Any valid repository (owner: test, name: valid-repo)"
       command: "./valid-repo.exe"
       expect:
-        repository_cloned_to: "%LOCALAPPDATA%/reporun/valid-repo"
+        repository_cloned_to: "%LOCALAPPDATA%/reporun/repos/test/valid-repo"
 
   macos:
     - name: "macOS executable format"
@@ -276,10 +287,10 @@ cross_platform:
 
     - name: "macOS cache directory"
       setup:
-        - Any valid repository
+        - "Any valid repository (owner: test, name: valid-repo)"
       command: "./valid-repo"
       expect:
-        repository_cloned_to: "~/Library/Caches/reporun/valid-repo"
+        repository_cloned_to: "~/Library/Caches/reporun/repos/test/valid-repo"
 
   linux:
     - name: "Linux executable format"
@@ -293,18 +304,18 @@ cross_platform:
     - name: "Linux cache directory with XDG_CACHE_HOME"
       setup:
         - Set XDG_CACHE_HOME=/custom/cache
-        - Any valid repository
+        - "Any valid repository (owner: test, name: valid-repo)"
       command: "./valid-repo"
       expect:
-        repository_cloned_to: "/custom/cache/reporun/valid-repo"
+        repository_cloned_to: "/custom/cache/reporun/repos/test/valid-repo"
 
     - name: "Linux cache directory without XDG_CACHE_HOME"
       setup:
         - Unset XDG_CACHE_HOME
-        - Any valid repository
+        - "Any valid repository (owner: test, name: valid-repo)"
       command: "./valid-repo"
       expect:
-        repository_cloned_to: "~/.cache/reporun/valid-repo"
+        repository_cloned_to: "~/.cache/reporun/repos/test/valid-repo"
 
 edge_cases:
   - name: "Repository name with special characters"
@@ -327,7 +338,9 @@ edge_cases:
   - name: "Concurrent runs of same runner"
     setup:
       - Config with long-running entrypoint
-    command: "./valid-repo &; ./valid-repo &"
+    # POSIX shells treat `&` as a command terminator, so `./valid-repo &; ...`
+    # is a syntax error. Background both jobs and `wait` for them instead.
+    command: "./valid-repo & ./valid-repo & wait"
     expect:
       both_processes_succeed: true
       no_race_conditions: true
@@ -343,13 +356,26 @@ edge_cases:
 
   - name: "Empty entrypoint command"
     setup:
-      - Config:
+      - |
+        reporun.toml contents:
           entrypoint = ""
     command: "./valid-repo"
     expect:
       exit_code: 15
       output_contains:
         - "Entrypoint command not found"
+
+  - name: "Different owners with the same repo name do not collide"
+    setup:
+      - Build runner A from https://github.com/alice/tool
+      - Build runner B from https://github.com/bob/tool
+      - Run A, then run B
+    command: "./tool-b"
+    expect:
+      exit_code: 0
+      # Runner B must not execute alice/tool's code via a shared clone.
+      repository_cloned_to: "~/.cache/reporun/repos/bob/tool"
+      origin_remote_matches: "https://github.com/bob/tool"
 
   - name: "Repository changes significantly between runs"
     setup:

@@ -65,29 +65,33 @@ Python version and dependencies are managed by uv through standard files (`.pyth
 
 ### Storage Locations
 
-Always use OS-specific cache directories (XDG Base Directory compliant):
-- **Linux**: `$XDG_CACHE_HOME/reporun/<repo-name>` or `~/.cache/reporun/<repo-name>`
-- **macOS**: `~/Library/Caches/reporun/<repo-name>`
-- **Windows**: `%LOCALAPPDATA%\reporun\<repo-name>`
+Always use OS-specific cache directories (XDG Base Directory compliant). Under the cache root, keep reporun's own tools and per-repository clones in disjoint subdirectories so that installing uv cannot collide with the clone target, and so that two repositories with the same name but different owners cannot share a clone:
+
+- **Linux**: `$XDG_CACHE_HOME/reporun` or `~/.cache/reporun`
+- **macOS**: `~/Library/Caches/reporun`
+- **Windows**: `%LOCALAPPDATA%\reporun`
+
+Layout under the cache root:
+- `<cache-root>/_tools/uv` — reporun-managed uv installation
+- `<cache-root>/repos/<owner>/<repo>` — per-repository clone
 
 ### Critical Features
 
-1. **Update Strategies**
-   - `always`: Pull on every run
-   - `daily`: Pull once per day maximum
-   - `weekly`: Pull once per week maximum
-   - `never`: Clone once, never update
+1. **Always-Fresh Updates**
+   - On every run, fetch and reset to `origin/HEAD` (no configurable update strategy in v1.0).
 
 2. **Dependency Management**
-   - Use `uv sync` for primary dependency installation
-   - Support custom dependency commands via config
+   - Use `uv sync` for dependency installation from `pyproject.toml` / `uv.lock`.
 
-3. **Error Handling**
+3. **Entrypoint Execution**
+   - Execute the configured `entrypoint` via `uv run -- <entrypoint>` so the project's `.venv` and pinned Python version are used. Do not invoke the entrypoint directly from the ambient shell.
+
+4. **Error Handling**
    - Proper exit codes for each failure scenario (see SPEC.md)
    - Clear error messages
    - Graceful offline behavior
 
-4. **Cross-Platform Support**
+5. **Cross-Platform Support**
    - Windows, macOS, and Linux
    - Appropriate binary formats for each platform
 
@@ -128,7 +132,9 @@ Before considering the implementation complete:
 - [ ] Runtime reads reporun.toml from cloned repo
 - [ ] Runtime updates repo on every run
 - [ ] Runtime installs dependencies with uv (from pyproject.toml)
-- [ ] Runtime executes entrypoint correctly
+- [ ] Runtime executes entrypoint via `uv run --` so the project `.venv` is used
+- [ ] uv install path (`<cache-root>/_tools/uv`) is disjoint from clone path (`<cache-root>/repos/<owner>/<repo>`)
+- [ ] Cache path includes repository owner (no `alice/tool` vs `bob/tool` collisions)
 - [ ] Python version handling via .python-version works
 - [ ] Exit codes match specification
 - [ ] Cross-platform binaries work
