@@ -24,7 +24,7 @@ reporun operates in two distinct phases:
 │     ↓                                                       │
 │  Read reporun.toml                                          │
 │     ↓                                                       │
-│  Create runner binary (embeds: repo URL, config)            │
+│  Create runner binary (embeds: repo URL)                    │
 │     ↓                                                       │
 │  Output: ./runner executable                                │
 └─────────────────────────────────────────────────────────────┘
@@ -217,7 +217,7 @@ entrypoint = "python -m myproject"
 - Executed as shell command from repository root
 - Examples:
   - `"python -m myproject"`
-  - `"uv run main.py"`
+  - `"python main.py"`
   - `"python cli.py --serve"`
 
 ## Cross-Platform Considerations
